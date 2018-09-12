@@ -6,4 +6,4 @@ Experiments with Rust event loops from a nodejs background.
 
 To try this out:
 
-    cargo run
+    cargo test -- --nocapture

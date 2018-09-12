@@ -1,8 +1,10 @@
 [package]
 
-name = "hello_world"
+name = "node_rs"
 version = "0.0.0"
 authors = [ "Caleb James DeLisle" ]
+description = "NodeJS-like event loop environment for Rust"
+license = "MIT"
 
 [dependencies]
 mio = "0.6.15"
