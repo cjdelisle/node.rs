@@ -9,3 +9,5 @@ license = "MIT"
 [dependencies]
 mio = "0.6.15"
 mio-extras = "2.0.5"
+tooples = "0.2.0"
+bytes = "0.4.9"

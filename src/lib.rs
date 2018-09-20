@@ -1,73 +1,101 @@
 extern crate mio;
 extern crate mio_extras;
+extern crate tooples;
+extern crate bytes;
 
 pub mod node;
 pub mod callback;
+pub mod time;
+pub mod dgram;
+#[macro_use] pub mod macros;
 
 #[cfg(test)]
 mod tests {
-    use callback::cb0;
     use mio;
     use node::{ Loop, module };
+    use time::{ set_timeout, set_interval, clear_timeout };
 
-    struct X {
-        i: u32,
+    struct MyObj {
+        i: u32
     }
-    impl X {
-        fn hi(&self) {
+    impl MyObj {
+        fn object_method(&mut self) {
             println!("Hello {}", self.i);
+            self.i += 1;
         }
     }
 
-    fn test<X:Loop<X>>(_x: &mut X)
+    fn my_function<X:Loop<X>>(_x: &mut X)
     {
         println!("Plain old function");
     }
-    struct ABC {
-        i: i32,
-        x: mio::Token
+/*
+    #[test]
+    fn test_udp() {
+        module().run((),|s| {
+            s.module().new_thread(true).run(rec!{
+                timeout: mio::Token(0),
+                counter: 0
+            },|s|{
+
+                s.timeout = set_interval(s,|s|{
+                    s.counter += 1;
+                    println!(">s.i = {}", s.counter);
+                    if s.counter > 100 {
+                        clear_timeout(s, s.timeout);
+                    }
+                }, 100);
+
+
+            })
+        });
     }
+*/
 
     #[test]
-    fn test_main()
-    {
+    fn test_main() {
         println!("hi");
         module().run((1,2,3),|s| {
             println!("here {}", s.2);
-            s.core().set_timeout(cb0(s,|_s|{ println!("Hello1"); }), 100, false);
+            set_timeout(s,|_s|{ println!("Hello1"); }, 100);
 
-            s.with_scope(ABC {
+            s.with_scope(rec!{
                 i: 0,
                 x: mio::Token(0)
             },|s|{
                 s.i = 300;
-                s.core().set_timeout(cb0(s,|s|{
+                set_timeout(s,|s|{
                     println!("Hello world! {}", s.i);
                     s.i += 1;
-                }), 150, false);
-                s.core().set_timeout(cb0(s,|s|{
+                }, 150);
+                set_timeout(s,|s|{
                     println!("Hello again! {}", s.i);
                     s.i += 1;
-                }), 160, false);
+                }, 160);
 
-                s.with_scope(X {
+                s.with_scope(MyObj {
                     i: 33
                 },|s|{
-                    s.core().set_timeout(cb0(s,|s|{ s.hi() }), 500, false);
+                    set_timeout(s,|s|{ s.object_method() }, 500);
                     println!("s.i = {}", s.i);
                     println!("s.p().i = {}", s.p().i);
                 });
 
-                s.x = s.core().set_timeout(cb0(s,test), 50, true);
-                s.core().set_timeout(cb0(s,|s|{
-                    let t = s.x;
-                    match s.core().deregister_event(&t) { _=>() }
-                }), 1000, false);
+                s.x = set_interval(s, my_function, 50);
+                set_timeout(s,|s|{ clear_timeout(s, s.x); }, 1000);
 
-                s.module().run(X {
-                    i: 21
+                s.module().new_thread(true).run(rec!{
+                    i: 21,
+                    x: mio::Token(0)
                 },|s|{
                     println!("Hi hi {}", s.i);
+                    s.x = set_interval(s,|s|{
+                        s.i += 1;
+                        println!("s.i = {}", s.i);
+                        if s.i > 100 {
+                            clear_timeout(s,s.x);
+                        }
+                    }, 100);
                 })
             });
         });

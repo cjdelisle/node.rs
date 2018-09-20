@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::time::{ Duration, SystemTime, UNIX_EPOCH };
 use std::cmp::Ordering;
 use std::ops::{ Deref, DerefMut };
+use mio_extras::channel::{ Sender, Receiver };
 
 macro_rules! debug {
     ($fmt:expr $(,$x:expr)* ) => {
@@ -49,18 +50,21 @@ impl fmt::Debug for EventHandler {
     }
 }
 
-#[derive(Debug)]
 struct CorePvt {
     handlers: HashMap<mio::Token, EventHandler>,
     poll: mio::Poll,
     next_timeouts: BTreeMap<Duration, Vec<TimerCb>>,
     event_count: usize,
     next_token: usize,
-    now: Duration
+    now: Duration,
+    callback_receiver: Receiver<CallbackEv>,
+
+    next_callback_id: i32,
+    callbacks_this_cycle: Vec<(i32, CallbackImpl)>
 }
 
 impl CorePvt {
-    fn _do_timeouts(&mut self, tos: &mut Vec<Callback<()>>) -> Option<Duration>
+    fn _do_timeouts(&mut self) -> Option<Duration>
     {
         let mut dur = None;
         let mut remove = Vec::new();
@@ -87,12 +91,10 @@ impl CorePvt {
             let x = self.next_timeouts.remove(&time);
             for xx in x {
                 for el in xx {
+                    el.cb.call(());
                     if el.interval {
-                        tos.push(el.cb.clone());
                         let d = now + Duration::from_millis(el.millis);
                         self._schedule_timeout(el, d);
-                    } else {
-                        tos.push(el.cb);
                     }
                 }
             }
@@ -181,11 +183,20 @@ impl CorePvt {
         self._schedule_timeout(tcb, d);
         id
     }
+
+    fn next_callback_id(&mut self) -> i32 {
+        self.next_callback_id
+    }
+    fn register_callback(&mut self, id: i32, cbi: CallbackImpl) {
+        self.callbacks_this_cycle.push((id, cbi));
+        self.next_callback_id += 1;
+    }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Clone)]
 pub struct Core {
-    wp: Rc<RefCell<CorePvt>>
+    wp: Rc<RefCell<CorePvt>>,
+    pub callback_sender: Sender<CallbackEv>
 }
 impl Core {
     pub fn register_event<E>(
@@ -203,6 +214,13 @@ impl Core {
     }
     pub fn set_timeout(&self, cb: Callback<()>, millis: u64, interval: bool) -> mio::Token {
         self.wp.borrow_mut().set_timeout(cb, millis, interval)
+    }
+
+    pub fn next_callback_id(&self) -> i32 {
+        self.wp.borrow_mut().next_callback_id()
+    }
+    pub fn register_callback(&self, id: i32, cbi: CallbackImpl) {
+        self.wp.borrow_mut().register_callback(id, cbi)
     }
 }
 
@@ -256,7 +274,7 @@ impl<A> DerefMut for Scope<A> {
 }
 
 pub trait Loop<A> where A: 'static + Loop<A>, Self: 'static {
-    fn module(&self) -> ModuleCfg { module().with_loop(Some(self.core().clone())) }
+    fn module(&self) -> ModuleCfg { module().with_loop(self.core().clone()) }
     fn with_scope<X>(&self, x:X, f:fn(&mut SubScope<A,X>)) {
         let ss = Rc::new(RefCell::new(SubScope {
             p: self.as_rc(),
@@ -265,7 +283,7 @@ pub trait Loop<A> where A: 'static + Loop<A>, Self: 'static {
             w: self.core().clone()
         }));
         ss.borrow_mut().s = Rc::downgrade(&ss);
-        self.core().set_timeout(Box::new(CallbackS0 { a: ss, f: f }), 0, false);
+        self.core().set_timeout(cb0(&*ss.borrow_mut(), f), 0, false);
     }
     fn core(&self) -> &Core;
     fn as_rc(&self) -> Rc<RefCell<A>>;
@@ -283,19 +301,37 @@ impl<A> Loop<Scope<A>> for Scope<A> {
 // Loop runner
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-fn _get_events(_w: &Core, handlers: &mut Vec<Callback<()>>, events: &mut mio::Events) -> bool
+const CB_RECV_TOKEN: mio::Token = mio::Token(100);
+const FIRST_TOKEN:   usize      = 101;
+
+//self.callback_by_id.insert(id, cbi);
+
+fn _get_events(
+    _w: &Core,
+    calls: &mut Vec<CallbackEv>,
+    events: &mut mio::Events,
+    callback_by_id: &mut HashMap<i32, CallbackImpl>,
+) -> bool
 {
-    handlers.clear();
     let mut w = _w.wp.borrow_mut();
-    let dur = w._do_timeouts(handlers);
+    callback_by_id.retain(|_k,v|{ v.canary.upgrade().is_some() });
+    for icb in w.callbacks_this_cycle.drain(..) { callback_by_id.insert(icb.0, icb.1); }
+    let dur = w._do_timeouts();
     for ev in events.iter() {
+        // If we get the CB_RECV_TOKEN, it doesn't matter, we're going to poll anyway
         match w.handlers.get(&ev.token()) {
-            Some(eh) => { handlers.push(eh.handler.clone()); }
+            Some(eh) => { eh.handler.call(()); }
             None => ()
         };
     }
-    if handlers.len() > 0 { return true; }
-    if 0 == w.event_count && dur == None { return false; }
+    loop {
+        match w.callback_receiver.try_recv() {
+            Ok(cb) => { calls.push(cb) }
+            _ => break,
+        }
+    }
+    if calls.len() > 0 { return true; }
+    if 0 == w.event_count && dur == None && 0 == callback_by_id.len() { return false; }
     debug!("Polling for [{:?}], [{}] events [{}] timeouts", &dur, w.event_count, w.next_timeouts.len());
     w.poll.poll(events, dur).unwrap();
     return true;
@@ -312,23 +348,32 @@ pub struct ModuleCfg
 impl ModuleCfg
 {
     pub fn new_thread(mut self, it: bool) -> Self { self.new_thread = it; self }
-    pub fn with_loop(mut self, core: Option<Core>) -> Self { self.with_loop = core; self }
+    pub fn with_loop(mut self, core: Core) -> Self { self.with_loop = Some(core); self }
 
     pub fn run<T,U>(self, t:T, f: fn(&mut Scope<T>)->U) -> U where
         T: Send + 'static,
         U: Send + 'static
     {
-        if self.new_thread {
-            let (tx, rx) = mpsc::channel();
-            thread::spawn(move|| {
-                let (w, u) = new_core(t, f);
-                tx.send(u).unwrap();
-                loop_core(w);
-            });
-            return rx.recv().unwrap();
-        }
         match self.with_loop {
-            Some(core) => exec(&core, t, f),
+            Some(core) => {
+                if self.new_thread {
+                    let cb: Callback<thread::ThreadId> = Callback::new(&core, (), |_,tid| {
+                        // This callback exists only to prevent the main parent loop from
+                        // shutting down until all child loops have shutdown.
+                        debug!("Thread ended {:?}", tid);
+                    });
+
+                    let (tx, rx) = mpsc::channel();
+                    thread::spawn(move|| {
+                        let (w, u) = new_core(t, f, );
+                        tx.send(u).unwrap();
+                        loop_core(w);
+                        cb.call(thread::current().id());
+                    });
+                    return rx.recv().unwrap();
+                }
+                exec(&core, t, f)
+            }
             None => {
                 let (w, u) = new_core(t, f);
                 loop_core(w);
@@ -346,14 +391,28 @@ pub fn module() -> ModuleCfg {
 
 fn new_core<T,U>(t:T, f: fn(&mut Scope<T>)->U) -> (Core, U)
 {
+    let (tx, rx) = mio_extras::channel::channel();
+    let poll = mio::Poll::new().unwrap();
+    poll.register(
+        &rx,
+        CB_RECV_TOKEN,
+        mio::Ready::readable(),
+        mio::PollOpt::edge()
+    ).unwrap();
+
     let core = Core {
+        callback_sender: tx,
         wp: Rc::new(RefCell::new(CorePvt {
-            poll: mio::Poll::new().unwrap(),
+            callback_receiver: rx,
+            poll: poll,
             event_count: 0,
-            next_token: 0,
+            next_token: FIRST_TOKEN,
             handlers: HashMap::new(),
             next_timeouts: BTreeMap::new(),
-            now: SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
+            now: SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+
+            next_callback_id: 0,
+            callbacks_this_cycle: Vec::new()
         }))
     };
     let u = exec(&core, t, f);
@@ -363,10 +422,18 @@ fn new_core<T,U>(t:T, f: fn(&mut Scope<T>)->U) -> (Core, U)
 fn loop_core(w: Core)
 {
     let mut events = mio::Events::with_capacity(1024);
-    let mut handlers: Vec<Callback<()>> = Vec::new();
+    let mut calls: Vec<CallbackEv> = Vec::new();
+    let mut callback_by_id: HashMap<i32, CallbackImpl> = HashMap::new();
     loop {
-        debug!("Calling [{}] handlers", handlers.len());
-        for h in &handlers { h.call(()); }
-        if !_get_events(&w, &mut handlers, &mut events) { break; }
+        debug!("Dispatching [{}] events", calls.len());
+        for ev in calls.drain(..) {
+            match ev {
+                CallbackEv::Req(c) => {
+                    let mut cbi = callback_by_id.get_mut(&c.canary.callback_id).unwrap();
+                    (cbi.dispatch)(&mut cbi, c.x);
+                }
+            }
+        }
+        if !_get_events(&w, &mut calls, &mut events, &mut callback_by_id) { break; }
     }
 }
