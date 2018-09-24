@@ -114,8 +114,8 @@ every callback that is called. We'll get to the module builder later on, but for
 your program with `module().run((), |s| {` ..... `});`.
 
 ```rust
-use node_rs::module;
-use node_rs::time::set_timeout;
+use noders::module;
+use noders::time::set_timeout;
 fn main() {
     module().run((), |s| {
         set_timeout(s, |s, _| {
