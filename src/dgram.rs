@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::cell::{ RefCell, RefMut };
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use mio::{ Ready, PollOpt, Token};
+use mio::{ Ready, PollOpt };
 use bytes::{ BytesMut, BufMut };
 use mio;
 use std;
@@ -11,6 +11,7 @@ use std::ops::Deref;
 use std::net::{ IpAddr, Ipv4Addr, Ipv6Addr };
 use std::str::FromStr;
 use std::io::ErrorKind;
+use super::Token;
 
 use callback::Callback;
 

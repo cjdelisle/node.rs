@@ -114,11 +114,10 @@ every callback that is called. We'll get to the module builder later on, but for
 your program with `module().run((), |s| {` ..... `});`.
 
 ```rust
-use noders::module;
-use noders::time::set_timeout;
+extern crate noders;
 fn main() {
-    module().run((), |s| {
-        set_timeout(s, |s, _| {
+    noders::module().run((), |s| {
+        noders::time::set_timeout(s, |s, _| {
             println!("Hello1");
         }, 100);
     });
@@ -190,9 +189,144 @@ fn main() {
 ```
 [Try it out in the Rust Playground](https://play.rust-lang.org/?gist=f49f4eadcf16b568c53f5b1ce12f7fd9&version=stable&mode=debug&edition=2015)
 
-### How the Scope works
+#### How the Scope works
 
 When you created a module with `module().run((), |s| {` ..... `});`, you might have noticed that
 the first argument to `run()` is `()`, the [unit](https://doc.rust-lang.org/std/primitive.unit.html)
-(similar to `null` in other programming languages). This object can be anything you want to pass in,
-and the scope (`s`) will be created from that object. For example:
+(similar to `null` in other programming languages). When you invoke `run()`, you can pass in any
+object and this object will be *wrapped* to create a scope, so with the following pattern, you can
+get a working scope:
+
+```rust
+extern crate noders;
+
+struct Context {
+    integer: i32,
+    hi: &'static str,
+    number: f32
+}
+
+fn main() {
+    let ctx = Context {
+        integer: 1,
+        hi: &"Hello world",
+        number: 3.5
+    };
+
+    noders::module().run(ctx, |s| {
+        noders::time::set_timeout(s, |s,_| {
+            println!("{} {}", s.hi, s.number);
+            s.integer += 1;
+        }, 100);
+        noders::time::set_timeout(s, |s,_| {
+            println!("{}", s.integer);
+        }, 200);
+    });
+}
+```
+
+However, note that the scope wrapper adds the following functions `cb()`, `as_rc()`, and `core()`.
+So if you pass in an object with a `core()` method (for example), calling the `core()` method will
+not do what you expect.
+
+### The rec!{} macro
+
+Since using noders can lead to creating lots of temporary scope objects, the `rec!{}` macro exists
+to help you create quick anonymous objects. Because Rust has strong type inferrence, you can often
+just pass the value and Rust will detect the type. So this:
+
+```rust
+extern crate noders;
+struct Context {
+    integer: i32,
+    hi: &'static str,
+    number: f32
+}
+fn main() {
+    noders::module().run(Context {
+        integer: 1,
+        hi: &"Hello world",
+        number: 3.5
+    }, |s| {
+        noders::time::set_timeout(s, |s,_| {
+            println!("{} {}", s.hi, s.number);
+            s.integer += 1;
+        }, 100);
+        noders::time::set_timeout(s, |s,_| {
+            println!("{}", s.integer);
+        }, 200);
+    });
+}
+```
+
+Can be simplified to this:
+
+```rust
+#[macro_use(rec)] extern crate noders;
+fn main() {
+    noders::module().run(rec!{
+        integer: 1,
+        hi: &"Hello world",
+        number: 3.5
+    }, |s| {
+        noders::time::set_timeout(s, |s,_| {
+            println!("{} {}", s.hi, s.number);
+            s.integer += 1;
+        }, 100);
+        noders::time::set_timeout(s, |s,_| {
+            println!("{}", s.integer);
+        }, 200);
+    });
+}
+```
+
+Internally, what `rec!{}` does is examine entries which you create and craft some code like
+the following:
+
+```rust
+{
+    struct Rec<A,B,C> { integer: A hi: B, number: C }
+    Rec { integer: 1, hi: &"Hello world", number: 3.5 }
+}
+```
+
+And Rust's strong type inferrence system is able to determine what the types of the objects
+are. **CAUTION**: If you create a `rec!{}` with ambiguous values (for example None), Rust may
+not be able to detect the type and you may have to use an explicit structure.
+
+Throughout this document, we will use the `rec!{}` macro to simplify examples.
+
+### The time module
+
+The heart of any event based system is the means to *schedule* a callback to trigger at some point
+in the future. The `set_timeout()`, `set_interval()`, `clear_timeout()` and `clear_interval()`
+functions are part of the time module. Like their Javascript cousins, the `set_timeout()` and
+`set_interval()` functions return a Token which can be used with `clear_timeout()` or
+`clear_interval()` to cancel the timeout or interval.
+
+```rust
+extern crate noders;
+use noders::time;
+fn main() {
+    let x = 3;
+    noders::module().run(rec!{
+        to: noders::Token(0)
+    }, |s| {
+        s.to = time::set_timeout(s, |_,_| {
+            println!("This should never happen");
+        }, 100);
+        time::set_timeout(s, |_,_| {
+            time::clear_timeout(s, s.to);
+        }, 50);
+    });
+}
+```
+
+
+### The rec!{} macro
+
+
+
+
+### Making SubScopes
+

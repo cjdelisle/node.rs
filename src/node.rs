@@ -3,6 +3,8 @@
 extern crate mio;
 extern crate mio_extras;
 
+use super::Token;
+
 use callback::*;
 
 use std::cell::RefMut;
@@ -26,7 +28,7 @@ struct TimerCb {
     interval: bool,
     cb: Callback<()>,
     millis: u64,
-    id: mio::Token
+    id: Token
 }
 impl fmt::Debug for TimerCb {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -36,7 +38,7 @@ impl fmt::Debug for TimerCb {
 
 struct EventHandler {
     handler: Callback<()>,
-    token: mio::Token,
+    token: Token,
     ev: Rc<mio::Evented>
 }
 impl fmt::Debug for EventHandler {
@@ -46,7 +48,7 @@ impl fmt::Debug for EventHandler {
 }
 
 struct CorePvt {
-    handlers: HashMap<mio::Token, EventHandler>,
+    handlers: HashMap<Token, EventHandler>,
     poll: mio::Poll,
     next_timeouts: BTreeMap<Duration, Vec<TimerCb>>,
     event_count: usize,
@@ -114,19 +116,19 @@ impl CorePvt {
         ev: Rc<E>,
         handler: Callback<()>,
         ready: mio::Ready,
-        pollopt: mio::PollOpt) -> io::Result<mio::Token>
+        pollopt: mio::PollOpt) -> io::Result<Token>
         where E: mio::Evented, E: 'static
     {
-        let token = mio::Token(self.next_token);
+        let token = Token(self.next_token);
         let eh = EventHandler { handler, token, ev: ev.clone() };
         self.handlers.insert(token, eh);
         self.next_token += 1;
-        self.poll.register(&*ev, token, ready, pollopt)?;
+        self.poll.register(&*ev, token.into(), ready, pollopt)?;
         self.event_count += 1;
         Ok(token)
     }
 
-    fn deregister_event(&mut self, token: &mio::Token) -> io::Result<bool> {
+    fn deregister_event(&mut self, token: &Token) -> io::Result<bool> {
         match self.handlers.remove(token) {
             Some(handler) => {
                 self.event_count -= 1;
@@ -166,8 +168,8 @@ impl CorePvt {
         }
     }
 
-    fn set_timeout(&mut self, cb: Callback<()>, millis: u64, interval: bool) -> mio::Token {
-        let id = mio::Token(self.next_token);
+    fn set_timeout(&mut self, cb: Callback<()>, millis: u64, interval: bool) -> Token {
+        let id = Token(self.next_token);
         self.next_token += 1;
         let tcb = TimerCb { cb: cb, interval, millis, id: id.clone() };
         debug!("_set_timeout in {:?}", Duration::from_millis(millis));
@@ -196,19 +198,19 @@ impl Core {
         ev: Rc<E>,
         handler: Callback<()>,
         ready: mio::Ready,
-        pollopt: mio::PollOpt) -> io::Result<mio::Token>
+        pollopt: mio::PollOpt) -> io::Result<Token>
         where E: mio::Evented, E: 'static
     {
         let out = self.wp.borrow_mut().register_event(ev, handler, ready, pollopt);
         debug!("Register {:?}", &out);
         out
     }
-    pub fn deregister_event(&self, token: &mio::Token) -> io::Result<bool> {
+    pub fn deregister_event(&self, token: &Token) -> io::Result<bool> {
         let out = self.wp.borrow_mut().deregister_event(token);
         debug!("Deregister {} {:?}", token.0, &out);
         out
     }
-    pub fn set_timeout(&self, cb: Callback<()>, millis: u64, interval: bool) -> mio::Token {
+    pub fn set_timeout(&self, cb: Callback<()>, millis: u64, interval: bool) -> Token {
         self.wp.borrow_mut().set_timeout(cb, millis, interval)
     }
 
@@ -335,7 +337,7 @@ fn _get_events(
     let dur = w._do_timeouts();
     for ev in events.iter() {
         // If we get the CB_RECV_TOKEN, it doesn't matter, we're going to poll anyway
-        match w.handlers.get(&ev.token()) {
+        match w.handlers.get(&Token::from(ev.token())) {
             Some(eh) => { eh.handler.call(()); }
             None => ()
         };

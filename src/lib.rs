@@ -2,6 +2,14 @@ extern crate mio;
 extern crate mio_extras;
 extern crate bytes;
 
+// Same as an mio token, but exported to downstream libraries
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Token (pub usize);
+impl Into<mio::Token> for Token { fn into(self) -> mio::Token { mio::Token(self.0) } }
+impl From<mio::Token> for Token { fn from(val: mio::Token) -> Token { Token(val.0) } }
+impl Into<usize> for Token { fn into(self) -> usize { self.0 } }
+impl From<usize> for Token { fn from(val: usize) -> Token { Token(val) } }
+
 #[macro_use] pub mod macros_internal;
 #[macro_use] pub mod macros;
 pub mod node;
@@ -28,7 +36,7 @@ mod tests2 {
 
 #[cfg(test)]
 mod tests {
-    use mio;
+    use super::Token;
     use node::{ Loop, module };
     use time::{ set_timeout, set_interval, clear_timeout };
     use dgram::*;
@@ -107,7 +115,7 @@ mod tests {
 
             s.with_scope(rec!{
                 i: 0,
-                x: mio::Token(0)
+                x: Token(0)
             },|s|{
                 s.i = 300;
                 set_timeout(s,|s,_|{
@@ -132,7 +140,7 @@ mod tests {
 
                 s.module().new_thread(true).run(rec!{
                     i: 21,
-                    x: mio::Token(0)
+                    x: Token(0)
                 },|s|{
                     println!("Hi hi {}", s.i);
                     s.x = set_interval(s,|s,_|{

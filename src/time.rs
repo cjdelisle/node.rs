@@ -1,5 +1,5 @@
-use mio::Token;
 use node::Loop;
+use super::Token;
 
 pub fn set_timeout<L,F>(l:&L, cb:F, millis: u64) -> Token where
     L: Loop<L>,
