@@ -1,11 +1,10 @@
-//use tooples::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::any::Any;
 use mio_extras::channel::Sender;
 
-use node::{ Core, Loop };
+use node::Core;
 
 
 pub struct CallbackReq {
@@ -19,7 +18,6 @@ pub enum CallbackEv {
 pub struct Canary {
     pub callback_id: i32,
 }
-
 
 
 pub struct CallbackImpl {
@@ -73,23 +71,12 @@ impl<X> Callback<X> where X: Send + 'static {
         Callback { canary, _x: PhantomData, sender: c.callback_sender.clone() }
     }
     pub fn call(&self, x:X) {
-        self.sender.send(CallbackEv::Req(CallbackReq {
+        match self.sender.send(CallbackEv::Req(CallbackReq {
             x: Box::new(Some(x)),
             canary: self.canary.clone()
-        }));
-    }
-}
-
-pub fn cb0<W,F>(w:&W, f:F) -> Callback<()> where
-    W: Loop<W>,
-    F: 'static + Fn(&mut W)
-{
-    Callback::new(w.core(), (f,w.as_rc()), |fw,_y|{ fw.0(&mut *fw.1.borrow_mut()) })
-}
-pub fn cb<W,X,F>(w:&W, f:F) -> Callback<X> where
-    W: Loop<W>,
-    X: 'static + Send,
-    F: 'static + Fn(&mut W, X)
-{
-    Callback::new(w.core(), (f,w.as_rc()), |fw,x|{ fw.0(&mut *fw.1.borrow_mut(), x) })
+        })) {
+            Ok(_) => (),
+            Err(e) => { warn!("Error making callback {:?}", &e); }
+        }
+    } 
 }

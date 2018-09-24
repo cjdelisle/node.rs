@@ -1,4 +1,4 @@
-macro_rules! rec {
+#[macro_export] macro_rules! rec {
     (@mkstruct (
         [$firstlet:ident, $($letter:ident),*],
         { }

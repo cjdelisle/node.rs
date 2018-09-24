@@ -16,12 +16,7 @@ use std::time::{ Duration, SystemTime, UNIX_EPOCH };
 use std::cmp::Ordering;
 use std::ops::{ Deref, DerefMut };
 use mio_extras::channel::{ Sender, Receiver };
-
-macro_rules! debug {
-    ($fmt:expr $(,$x:expr)* ) => {
-        //println!(concat!("DEBUG {}:{} ", $fmt), file!(), line!() $(,$x)* );
-    }
-}
+use std::io::ErrorKind;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Event loop core
@@ -134,15 +129,12 @@ impl CorePvt {
     fn deregister_event(&mut self, token: &mio::Token) -> io::Result<bool> {
         match self.handlers.remove(token) {
             Some(handler) => {
+                self.event_count -= 1;
                 match self.poll.deregister(&*handler.ev) {
                     Err(e) => {
-                        self.handlers.insert(token.clone(), handler);
-                        Err(e)
-                    },
-                    Ok(_) => {
-                        self.event_count -= 1;
-                        Ok(true)
+                        if e.kind() == ErrorKind::NotFound { Ok(true) } else { Err(e) }
                     }
+                    Ok(_) => Ok(true)
                 }
             },
             None => {
@@ -207,10 +199,14 @@ impl Core {
         pollopt: mio::PollOpt) -> io::Result<mio::Token>
         where E: mio::Evented, E: 'static
     {
-        self.wp.borrow_mut().register_event(ev, handler, ready, pollopt)
+        let out = self.wp.borrow_mut().register_event(ev, handler, ready, pollopt);
+        debug!("Register {:?}", &out);
+        out
     }
     pub fn deregister_event(&self, token: &mio::Token) -> io::Result<bool> {
-        self.wp.borrow_mut().deregister_event(token)
+        let out = self.wp.borrow_mut().deregister_event(token);
+        debug!("Deregister {} {:?}", token.0, &out);
+        out
     }
     pub fn set_timeout(&self, cb: Callback<()>, millis: u64, interval: bool) -> mio::Token {
         self.wp.borrow_mut().set_timeout(cb, millis, interval)
@@ -283,18 +279,39 @@ pub trait Loop<A> where A: 'static + Loop<A>, Self: 'static {
             w: self.core().clone()
         }));
         ss.borrow_mut().s = Rc::downgrade(&ss);
-        self.core().set_timeout(cb0(&*ss.borrow_mut(), f), 0, false);
+        self.core().set_timeout(Callback::new(self.core(), (f,ss.clone()), |fw,_y|{
+            fw.0(&mut *fw.1.borrow_mut())
+        }), 0, false);
     }
     fn core(&self) -> &Core;
     fn as_rc(&self) -> Rc<RefCell<A>>;
+    fn cb<X,F>(&self, f:F) -> Callback<X> where
+        X: 'static + Send,
+        F: 'static + Fn(&mut A, X);
 }
 impl<P,A> Loop<SubScope<P,A>> for SubScope<P,A> where P: Loop<P> {
     fn core(&self) -> &Core { &self.w }
     fn as_rc(&self) -> Rc<RefCell<Self>> { self.s.upgrade().unwrap() }
+    fn cb<X,F>(&self, f:F) -> Callback<X> where
+        X: 'static + Send,
+        F: 'static + Fn(&mut SubScope<P,A>, X)
+    {
+        Callback::new(self.core(), rec!{ fun: f, l: self.as_rc() }, |ctx,x|{
+            (ctx.fun)(&mut *ctx.l.borrow_mut(), x)
+        })
+    }
 }
 impl<A> Loop<Scope<A>> for Scope<A> {
     fn core(&self) -> &Core { &self.w }
     fn as_rc(&self) -> Rc<RefCell<Self>> { self.s.upgrade().unwrap() }
+    fn cb<X,F>(&self, f:F) -> Callback<X> where
+        X: 'static + Send,
+        F: 'static + Fn(&mut Scope<A>, X)
+    {
+        Callback::new(self.core(), rec!{ fun: f, l: self.as_rc() }, |ctx,x|{
+            (ctx.fun)(&mut *ctx.l.borrow_mut(), x)
+        })
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -314,7 +331,6 @@ fn _get_events(
 ) -> bool
 {
     let mut w = _w.wp.borrow_mut();
-    callback_by_id.retain(|_k,v|{ v.canary.upgrade().is_some() });
     for icb in w.callbacks_this_cycle.drain(..) { callback_by_id.insert(icb.0, icb.1); }
     let dur = w._do_timeouts();
     for ev in events.iter() {
@@ -324,6 +340,7 @@ fn _get_events(
             None => ()
         };
     }
+    events.clear();
     loop {
         match w.callback_receiver.try_recv() {
             Ok(cb) => { calls.push(cb) }
@@ -331,8 +348,10 @@ fn _get_events(
         }
     }
     if calls.len() > 0 { return true; }
+    callback_by_id.retain(|_k,v|{ v.canary.upgrade().is_some() });
     if 0 == w.event_count && dur == None && 0 == callback_by_id.len() { return false; }
-    debug!("Polling for [{:?}], [{}] events [{}] timeouts", &dur, w.event_count, w.next_timeouts.len());
+    debug!("Polling for [{:?}], [{}] events [{}] timeouts [{}] callbacks",
+        &dur, w.event_count, w.next_timeouts.len(), callback_by_id.len());
     w.poll.poll(events, dur).unwrap();
     return true;
 }
@@ -365,10 +384,12 @@ impl ModuleCfg
 
                     let (tx, rx) = mpsc::channel();
                     thread::spawn(move|| {
+                        let tid = thread::current().id();
+                        debug!("Thread started {:?}", tid);
                         let (w, u) = new_core(t, f, );
                         tx.send(u).unwrap();
                         loop_core(w);
-                        cb.call(thread::current().id());
+                        cb.call(tid);
                     });
                     return rx.recv().unwrap();
                 }
