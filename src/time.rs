@@ -3,13 +3,13 @@ use super::Token;
 
 pub fn set_timeout<L,F>(l:&L, cb:F, millis: u64) -> Token where
     L: Loop<L>,
-    F: 'static + Fn(&mut L, ())
+    F: 'static + Fn(&mut L, Token)
 {
     l.core().set_timeout(l.cb(cb), millis, false)
 }
 pub fn set_interval<L,F>(l:&L, cb:F, millis: u64) -> Token where
     L: Loop<L>,
-    F: 'static + Fn(&mut L, ())
+    F: 'static + Fn(&mut L, Token)
 {
     l.core().set_timeout(l.cb(cb), millis, true)
 }

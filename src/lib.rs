@@ -51,7 +51,7 @@ mod tests {
         }
     }
 
-    fn my_function<X:Loop<X>>(_x: &mut X, _:())
+    fn my_function<X:Loop<X>>(_x: &mut X, _:Token)
     {
         println!("Plain old function");
     }

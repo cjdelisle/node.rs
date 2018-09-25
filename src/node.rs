@@ -26,7 +26,7 @@ use std::io::ErrorKind;
 
 struct TimerCb {
     interval: bool,
-    cb: Callback<()>,
+    cb: Callback<Token>,
     millis: u64,
     id: Token
 }
@@ -88,7 +88,7 @@ impl CorePvt {
             let x = self.next_timeouts.remove(&time);
             for xx in x {
                 for el in xx {
-                    el.cb.call(());
+                    el.cb.call(el.id);
                     if el.interval {
                         let d = now + Duration::from_millis(el.millis);
                         self._schedule_timeout(el, d);
@@ -168,7 +168,7 @@ impl CorePvt {
         }
     }
 
-    fn set_timeout(&mut self, cb: Callback<()>, millis: u64, interval: bool) -> Token {
+    fn set_timeout(&mut self, cb: Callback<Token>, millis: u64, interval: bool) -> Token {
         let id = Token(self.next_token);
         self.next_token += 1;
         let tcb = TimerCb { cb: cb, interval, millis, id: id.clone() };
@@ -210,7 +210,7 @@ impl Core {
         debug!("Deregister {} {:?}", token.0, &out);
         out
     }
-    pub fn set_timeout(&self, cb: Callback<()>, millis: u64, interval: bool) -> Token {
+    pub fn set_timeout(&self, cb: Callback<Token>, millis: u64, interval: bool) -> Token {
         self.wp.borrow_mut().set_timeout(cb, millis, interval)
     }
 
