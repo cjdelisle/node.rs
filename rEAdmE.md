@@ -1,5 +1,7 @@
 # node.rs
 
+Status: incomplete/unmaintained, this was an experiment, you're better off using tokio or async-std with async/await.
+
 A nodejs-like framework for Rust.
 
 The biggest thing that makes nodejs pleasent to program in is the API. Even the most ardent Javascript
